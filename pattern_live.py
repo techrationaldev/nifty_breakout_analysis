@@ -57,7 +57,7 @@ with st.sidebar:
     atm_value        = st.selectbox("ATM Strike", atm_options)
     window_minutes   = st.slider("Detection Window (minutes)", 1, 60, value=5)
     threshold_points = st.slider("Threshold (points)", 1, 100, value=15)
-    # run_button is removed; we always run with these values
+    # run_button removed; always run
 
 def red_if_negative(val):
     try:
@@ -67,7 +67,6 @@ def red_if_negative(val):
 
 # ---------------------------------
 # 6) Burst Detection Logic
-#    (now ALWAYS runs using the sidebar values)
 # ---------------------------------
 combined_summaries = []
 combined_segments  = []
@@ -131,17 +130,16 @@ if combined_segments:
     df_seg            = pd.concat(combined_segments).drop_duplicates().sort_index()
     df_full_breakouts = df[df["index"].isin(df_seg["index"])].sort_values("DATETIME")
 else:
-    df_summary        = pd.DataFrame()  # empty
+    df_summary        = pd.DataFrame()
     df_full_breakouts = pd.DataFrame()
 
 # ---------------------------------
-# 7) Show Burst Detection Results (always tries to render)
+# 7) Show Burst Detection Results
 # ---------------------------------
 if df_summary.empty:
     st.subheader("🔎 Breakout Summary")
     st.info("No breakouts detected with current settings.")
 else:
-    # Summary table of detected bursts
     st.subheader("🔎 Breakout Summary")
     styled = (
         df_summary.style
@@ -161,7 +159,6 @@ else:
     )
     st.dataframe(styled, use_container_width=True)
 
-    # Full raw rows contributing to those bursts
     st.subheader("📈 Breakout Segments (full original data)")
     st.dataframe(df_full_breakouts, use_container_width=True)
 
@@ -184,7 +181,6 @@ else:
 
     freq    = tf_map[timeframe_label]
 
-    # Only build candles if we have rows
     if not df_full_breakouts.empty:
         df_full_idxed = df_full_breakouts.set_index("DATETIME")
 
@@ -215,7 +211,7 @@ else:
             xaxis_rangeslider_visible=False,
             margin=dict(l=20,r=20,t=30,b=20)
         )
-        st.plotly_chart(fig_spo, use_container_width=True)
+        st.plotly_chart(fig_spo, use_container_width=True, key="spo_candles")
 
         st.subheader("PE")
         fig_pe = go.Figure(data=[go.Candlestick(
@@ -230,7 +226,7 @@ else:
             xaxis_rangeslider_visible=False,
             margin=dict(l=20,r=20,t=30,b=20)
         )
-        st.plotly_chart(fig_pe, use_container_width=True)
+        st.plotly_chart(fig_pe, use_container_width=True, key="pe_candles")
 
         st.subheader("CE")
         fig_ce = go.Figure(data=[go.Candlestick(
@@ -245,15 +241,10 @@ else:
             xaxis_rangeslider_visible=False,
             margin=dict(l=20,r=20,t=30,b=20)
         )
-        st.plotly_chart(fig_ce, use_container_width=True)
+        st.plotly_chart(fig_ce, use_container_width=True, key="ce_candles")
 
 # ---------------------------------
-# 8) ATC-style Deviation Bands (Rolling mean ± σ)
-#    - ATM selector
-#    - metric selector
-#    - rolling lookback
-#    - horizontal zoom via Plotly rangeslider
-#    - POINT COLORING by zscore (red/blue/black)
+# 8) ATC-style Deviation Bands (Rolling mean ± σ) — MAIN
 # ---------------------------------
 
 st.header("📡 Deviation Bands (Mean ± Std Dev)")
@@ -267,12 +258,13 @@ candidate_metrics = [
         "STRADDLE", "STRADDLE_DELTA",
         "CE_OI", "PE_OI",
         "CE_IV", "PE_IV",
+        "CE_VOL", "PE_VOL",
         "TOTAL_OI", "CE_PE_DIFF"
     ]
     if col in df.columns
 ]
 
-# --- UI controls for ATC chart ---
+# --- UI controls for first ATC chart ---
 col_left, col_mid, col_right = st.columns(3)
 
 with col_left:
@@ -323,10 +315,6 @@ else:
     df_band["zscore"] = (df_band[price_col_choice] - df_band["mean"]) / df_band["std"]
     df_band["breakout_flag"] = df_band["zscore"].abs() >= 2
 
-    # --- COLOR LOGIC FOR POINTS ---
-    # red  = |z| >= 2  (outside ±2σ / orange)
-    # blue = 1 <= |z| < 2 (outside ±1σ / yellow but inside ±2σ)
-    # black = |z| < 1 (normal)
     def classify_color(z):
         if abs(z) >= 2:
             return "red"
@@ -372,12 +360,12 @@ else:
         name="-1σ"
     ))
 
-    # rolling mean (gray dashed)
+    # rolling mean (gray dashed) for selected metric
     fig_band.add_trace(go.Scatter(
         x=df_band["DATETIME"], y=df_band["mean"],
         mode="lines",
         line=dict(color="gray", width=2, dash="dash"),
-        name="Rolling mean"
+        name=f"{price_col_choice} Rolling mean"
     ))
 
     # actual values with colored markers by zscore
@@ -417,7 +405,207 @@ else:
         )
     )
 
-    st.plotly_chart(fig_band, use_container_width=True)
+    st.plotly_chart(fig_band, use_container_width=True, key="deviation_bands_main")
+
+
+# ++Candidate Metrics++ (for CE/PE/extra section)
+candidate_metrics = [
+    col for col in [
+        "ACT",
+        "CE", "PE", "SPO", "SFUT",
+        "SDIF", "SPO_DELTA",
+        "STRADDLE", "STRADDLE_DELTA",
+        "CE_OI", "PE_OI",
+        "CE_IV", "PE_IV",
+        "CE_VOL", "PE_VOL",
+        "TOTAL_OI", "CE_PE_DIFF"
+    ]
+    if col in df.columns
+]
+
+# --- UI controls for second ATC chart (with CE/PE mean lines) ---
+col_left, col_mid, col_right = st.columns(3)
+
+with col_left:
+    atm_for_band = st.selectbox(
+        "ATM Strike for Deviation Chart (ATM)",
+        sorted(df["ATM"].unique()),
+        key="band_ce_pe"
+    )
+
+with col_mid:
+    price_col_choice = st.selectbox(
+        "Metric to Analyze (rolling mean/σ)",
+        candidate_metrics,
+        index=0,
+        key="band_ce_peprice_col"
+    )
+
+with col_right:
+    lookback = st.slider(
+        "Rolling Window (bars)",
+        min_value=5,
+        max_value=200,
+        value=20,
+        key="band_ce_pe_lookback"
+    )
+
+# pull only rows where this ATM was actually ATM
+df_band = (
+    df[(df["STR"] == df["ATM"]) & (df["ATM"] == atm_for_band)]
+    .sort_values("DATETIME")
+    .reset_index(drop=True)
+    .copy()
+)
+
+if df_band.empty:
+    st.warning("No rows found for the selected ATM in the CSV.")
+else:
+    # rolling stats on the chosen metric
+    df_band["mean"] = df_band[price_col_choice].rolling(lookback).mean()
+    df_band["std"]  = df_band[price_col_choice].rolling(lookback).std()
+
+    df_band["upper1"] = df_band["mean"] + df_band["std"] * 1
+    df_band["lower1"] = df_band["mean"] - df_band["std"] * 1
+    df_band["upper2"] = df_band["mean"] + df_band["std"] * 2
+    df_band["lower2"] = df_band["mean"] - df_band["std"] * 2
+
+    # mark statistical breakouts
+    df_band["zscore"] = (df_band[price_col_choice] - df_band["mean"]) / df_band["std"]
+    df_band["breakout_flag"] = df_band["zscore"].abs() >= 2
+
+    def classify_color(z):
+        if abs(z) >= 2:
+            return "red"
+        elif abs(z) >= 1:
+            return "blue"
+        else:
+            return "black"
+
+    df_band["point_color"] = df_band["zscore"].apply(classify_color)
+
+    # Build the Plotly figure
+    fig_band = go.Figure()
+
+    # # ±2σ band (outer, light orange)
+    # fig_band.add_trace(go.Scatter(
+    #     x=df_band["DATETIME"], y=df_band["upper2"],
+    #     mode="lines",
+    #     line=dict(width=0, color="rgba(255,165,0,0.2)"),
+    #     name="+2σ"
+    # ))
+    # fig_band.add_trace(go.Scatter(
+    #     x=df_band["DATETIME"], y=df_band["lower2"],
+    #     mode="lines",
+    #     line=dict(width=0, color="rgba(255,165,0,0.2)"),
+    #     fill="tonexty",
+    #     fillcolor="rgba(255,165,0,0.15)",
+    #     name="-2σ"
+    # ))
+
+    # # ±1σ band (inner, yellow)
+    # fig_band.add_trace(go.Scatter(
+    #     x=df_band["DATETIME"], y=df_band["upper1"],
+    #     mode="lines",
+    #     line=dict(width=0, color="rgba(255,255,0,0.3)"),
+    #     name="+1σ"
+    # ))
+    # fig_band.add_trace(go.Scatter(
+    #     x=df_band["DATETIME"], y=df_band["lower1"],
+    #     mode="lines",
+    #     line=dict(width=0, color="rgba(255,255,0,0.3)"),
+    #     fill="tonexty",
+    #     fillcolor="rgba(255,255,0,0.2)",
+    #     name="-1σ"
+    # ))
+
+    # rolling mean (gray dashed) for selected metric
+    # fig_band.add_trace(go.Scatter(
+    #     x=df_band["DATETIME"], y=df_band["mean"],
+    #     mode="lines",
+    #     line=dict(color="gray", width=2, dash="dash"),
+    #     name=f"{price_col_choice} Rolling mean"
+    # ))
+
+    # 🔹 EXTRA: CE & PE rolling mean lines (like ACT mean, but separate)
+    if {"CE", "PE"}.issubset(df_band.columns):
+        df_band["CE"] = df_band["CE"]
+        df_band["PE"] = df_band["PE"]
+
+        # CE rolling mean (orange dotted)
+        fig_band.add_trace(go.Scatter(
+            x=df_band["DATETIME"], y=df_band["CE"],
+            mode="lines",
+            line=dict(color="orange", width=2),
+            name="CE"
+        ))
+
+        # PE rolling mean (purple dotted)
+        fig_band.add_trace(go.Scatter(
+            x=df_band["DATETIME"], y=df_band["PE"],
+            mode="lines",
+            line=dict(color="purple", width=2),
+            name="PE"
+        ))
+
+    if {"CE", "PE"}.issubset(df_band.columns):
+        df_band["CE_mean"] = df_band["CE"].rolling(lookback).mean()
+        df_band["PE_mean"] = df_band["PE"].rolling(lookback).mean()
+
+        # CE rolling mean (orange dotted)
+        fig_band.add_trace(go.Scatter(
+            x=df_band["DATETIME"], y=df_band["CE_mean"],
+            mode="lines",
+            line=dict(color="orange", width=2, dash="dot"),
+            name="CE Mean"
+        ))
+
+        # PE rolling mean (purple dotted)
+        fig_band.add_trace(go.Scatter(
+            x=df_band["DATETIME"], y=df_band["PE_mean"],
+            mode="lines",
+            line=dict(color="purple", width=2, dash="dot"),
+            name="PE Mean"
+        ))
+
+    # actual values with colored markers by zscore
+    # fig_band.add_trace(go.Scatter(
+    #     x=df_band["DATETIME"],
+    #     y=df_band[price_col_choice],
+    #     mode="markers+lines",
+    #     line=dict(color="rgba(50,50,50,0.3)", width=1),
+    #     marker=dict(
+    #         color=df_band["point_color"],
+    #         size=6,
+    #         line=dict(width=0.5, color="white")
+    #     ),
+    #     name=f"{price_col_choice} actual"
+    # ))
+
+    # Initial visible window for x-axis
+    start_time = df_band["DATETIME"].min()
+    end_time   = start_time + pd.Timedelta(minutes=15)
+
+    fig_band.update_layout(
+        title=f"ATM {atm_for_band} — {price_col_choice} Deviation Bands (rolling {lookback})",
+        xaxis_title="Time",
+        yaxis_title=price_col_choice,
+        hovermode="x unified",
+        margin=dict(l=20, r=20, t=40, b=20),
+        xaxis=dict(
+            range=[start_time, end_time],
+            rangeslider=dict(visible=True),
+            type="date"
+        ),
+        legend=dict(
+            orientation="v",
+            x=1.01,
+            xanchor="left",
+            y=1.0
+        )
+    )
+
+    st.plotly_chart(fig_band, use_container_width=True, key="deviation_bands_ce_pe")
 
     # Table of "statistical breakout" rows (|z| >= 2σ)
     st.subheader("🚨 Statistical Breakouts (|zscore| ≥ 2σ)")
@@ -439,7 +627,6 @@ have_all = all(col in df.columns for col in needed_cols)
 if not have_all:
     st.info("ACT / SDIF / SPO_DELTA not all found in this CSV, skipping delta chart.")
 else:
-    # use the same ATM as chosen for deviation bands
     df_delta = (
         df[(df["STR"] == df["ATM"]) & (df["ATM"] == atm_for_band)]
         .sort_values("DATETIME")
@@ -479,7 +666,7 @@ else:
             name="SPO Δ"
         ))
 
-        # same initial zoom style: first 15 minutes of this ATM's data
+        # same initial zoom style: first 15 minutes
         delta_start = df_delta["DATETIME"].min()
         delta_end   = delta_start + pd.Timedelta(minutes=15)
 
@@ -503,4 +690,4 @@ else:
             )
         )
 
-        st.plotly_chart(delta_fig, use_container_width=True)
+        st.plotly_chart(delta_fig, use_container_width=True, key="delta_chart_act_sdif_spo")
